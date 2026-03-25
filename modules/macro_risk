@@ -1,0 +1,523 @@
+"""
+天盾 - 宏观风险模块
+包含：政策风险、国际局势、地缘政治、美联储、石油价格等
+"""
+
+import numpy as np
+import pandas as pd
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple
+import requests
+import json
+
+class MacroRiskAnalyzer:
+    """宏观风险分析器"""
+    
+    # 政策风险关键词
+    POLICY_RISK_KEYWORDS = {
+        'high_risk': [
+            '限制', '禁止', '整顿', '处罚', '监管', '打击', '清理', '取缔',
+            '反垄断', '双减', '限价', '限购', '限贷'
+        ],
+        'medium_risk': [
+            '规范', '引导', '调整', '优化', '完善', '加强', '提高', '严格'
+        ],
+        'low_risk': [
+            '支持', '鼓励', '促进', '发展', '扶持', '优惠', '减免', '创新'
+        ]
+    }
+    
+    # 行业政策敏感度
+    INDUSTRY_POLICY_SENSITIVITY = {
+        '白酒': {'sensitivity': 0.7, 'key_policies': ['消费税', '三公消费', '限酒令']},
+        '新能源': {'sensitivity': 0.9, 'key_policies': ['补贴', '碳中和', '产能']},
+        '医药': {'sensitivity': 0.85, 'key_policies': ['集采', '医保', '创新药']},
+        '互联网': {'sensitivity': 0.95, 'key_policies': ['反垄断', '数据安全', '教育']},
+        '房地产': {'sensitivity': 0.9, 'key_policies': ['限购', '限贷', '三道红线']},
+        '金融': {'sensitivity': 0.8, 'key_policies': ['利率', '监管', '资本充足率']},
+        '能源': {'sensitivity': 0.75, 'key_policies': ['油价', '碳排放', '环保']},
+        '科技': {'sensitivity': 0.8, 'key_policies': ['芯片', '半导体', '出口管制']},
+    }
+    
+    def __init__(self):
+        self.cache = {}
+        self.cache_expiry = {}
+    
+    def analyze_policy_risk(self, stock_code: str, stock_name: str, 
+                           industry: str, news_items: List[Dict]) -> Dict:
+        """
+        分析政策风险
+        """
+        # 1. 新闻中的政策关键词分析
+        policy_mentions = self._analyze_news_policy_keywords(news_items)
+        
+        # 2. 行业政策敏感度
+        industry_sensitivity = self.INDUSTRY_POLICY_SENSITIVITY.get(
+            industry, {'sensitivity': 0.6, 'key_policies': []}
+        )['sensitivity']
+        
+        # 3. 计算政策风险评分
+        base_risk = policy_mentions['risk_score']
+        adjusted_risk = base_risk * industry_sensitivity
+        
+        # 4. 确定风险等级
+        if adjusted_risk >= 70:
+            level = 'high'
+            level_name = '高风险'
+            color = '#EF5350'
+        elif adjusted_risk >= 40:
+            level = 'medium'
+            level_name = '中风险'
+            color = '#FFCA28'
+        else:
+            level = 'low'
+            level_name = '低风险'
+            color = '#66BB6A'
+        
+        return {
+            'policy_risk_score': round(adjusted_risk, 1),
+            'risk_level': level,
+            'risk_level_name': level_name,
+            'risk_color': color,
+            'industry_sensitivity': industry_sensitivity,
+            'policy_mentions': policy_mentions,
+            'key_policies': industry_sensitivity.get('key_policies', []),
+            'recommendation': self._generate_policy_recommendation(adjusted_risk, industry_sensitivity)
+        }
+    
+    def _analyze_news_policy_keywords(self, news_items: List[Dict]) -> Dict:
+        """分析新闻中的政策关键词"""
+        risk_score = 50  # 基准分
+        high_risk_count = 0
+        medium_risk_count = 0
+        low_risk_count = 0
+        
+        for news in news_items:
+            title = news.get('title', '') + news.get('description', '')
+            
+            for keyword in self.POLICY_RISK_KEYWORDS['high_risk']:
+                if keyword in title:
+                    high_risk_count += 1
+                    risk_score += 5
+            
+            for keyword in self.POLICY_RISK_KEYWORDS['medium_risk']:
+                if keyword in title:
+                    medium_risk_count += 1
+                    risk_score += 2
+            
+            for keyword in self.POLICY_RISK_KEYWORDS['low_risk']:
+                if keyword in title:
+                    low_risk_count += 1
+                    risk_score -= 2
+        
+        # 归一化到 0-100
+        risk_score = max(0, min(100, risk_score))
+        
+        return {
+            'risk_score': risk_score,
+            'high_risk_count': high_risk_count,
+            'medium_risk_count': medium_risk_count,
+            'low_risk_count': low_risk_count,
+            'total_news': len(news_items)
+        }
+    
+    def analyze_geopolitical_risk(self, region: str = 'china') -> Dict:
+        """
+        分析地缘政治风险
+        简化模型：基于当前国际局势模拟评分
+        实际应用中可接入新闻 API 或专业数据源
+        """
+        # 模拟地缘政治风险因素
+        geopolitical_factors = {
+            'us_china_relations': self._get_us_china_risk(),
+            'middle_east_tension': self._get_middle_east_risk(),
+            'russia_ukraine': self._get_russia_ukraine_risk(),
+            'south_china_sea': self._get_south_china_sea_risk(),
+            'taiwan': self._get_taiwan_risk()
+        }
+        
+        # 加权计算综合地缘风险
+        weights = {
+            'us_china_relations': 0.35,
+            'middle_east_tension': 0.20,
+            'russia_ukraine': 0.15,
+            'south_china_sea': 0.15,
+            'taiwan': 0.15
+        }
+        
+        total_risk = sum(geopolitical_factors[k] * weights[k] for k in geopolitical_factors)
+        
+        # 确定风险等级
+        if total_risk >= 70:
+            level = 'high'
+            level_name = '高风险'
+        elif total_risk >= 40:
+            level = 'medium'
+            level_name = '中风险'
+        else:
+            level = 'low'
+            level_name = '低风险'
+        
+        return {
+            'geopolitical_risk_score': round(total_risk, 1),
+            'risk_level': level,
+            'risk_level_name': level_name,
+            'factors': geopolitical_factors,
+            'weights': weights,
+            'summary': self._generate_geopolitical_summary(geopolitical_factors)
+        }
+    
+    def _get_us_china_risk(self) -> float:
+        """中美关系风险评分"""
+        # 实际应用中应接入实时数据
+        # 这里使用模拟数据，基于近期趋势
+        base_risk = 65  # 基准风险分
+        
+        # 考虑因素：贸易摩擦、科技制裁、台湾问题等
+        recent_events = [
+            '芯片出口管制',  # +5
+            '关税政策',      # +3
+            '科技竞争'       # +2
+        ]
+        
+        return min(100, base_risk + len(recent_events) * 2)
+    
+    def _get_middle_east_risk(self) -> float:
+        """中东局势风险评分"""
+        base_risk = 55
+        # 考虑石油供应、地区冲突等
+        return min(100, base_risk + 10)
+    
+    def _get_russia_ukraine_risk(self) -> float:
+        """俄乌冲突风险评分"""
+        base_risk = 50
+        return min(100, base_risk + 5)
+    
+    def _get_south_china_sea_risk(self) -> float:
+        """南海局势风险评分"""
+        base_risk = 45
+        return min(100, base_risk + 8)
+    
+    def _get_taiwan_risk(self) -> float:
+        """台湾问题风险评分"""
+        base_risk = 60
+        return min(100, base_risk + 5)
+    
+    def _generate_geopolitical_summary(self, factors: Dict) -> str:
+        """生成地缘政治风险总结"""
+        max_factor = max(factors, key=factors.get)
+        max_risk = factors[max_factor]
+        
+        factor_names = {
+            'us_china_relations': '中美关系',
+            'middle_east_tension': '中东局势',
+            'russia_ukraine': '俄乌冲突',
+            'south_china_sea': '南海局势',
+            'taiwan': '台湾问题'
+        }
+        
+        return f"当前地缘政治风险主要来自{factor_names.get(max_factor, max_factor)}，" \
+               f"风险评分{max_risk:.0f}分，需密切关注相关动态。"
+    
+    def analyze_fed_risk(self) -> Dict:
+        """
+        分析美联储政策风险
+        包括：利率决策、量化宽松/紧缩、美元走势等
+        """
+        # 模拟美联储政策状态
+        fed_state = {
+            'interest_rate': 5.25,  # 当前利率
+            'rate_trend': 'hold',   # hold, hike, cut
+            'qe_status': 'tightening',  # easing, neutral, tightening
+            'dollar_index': 103.5,  # 美元指数
+            'inflation_rate': 3.2   # 美国通胀率
+        }
+        
+        # 计算美联储政策风险
+        rate_risk = self._calculate_rate_risk(fed_state['interest_rate'], fed_state['rate_trend'])
+        qe_risk = self._calculate_qe_risk(fed_state['qe_status'])
+        dollar_risk = self._calculate_dollar_risk(fed_state['dollar_index'])
+        inflation_risk = self._calculate_inflation_risk(fed_state['inflation_rate'])
+        
+        # 综合风险
+        total_risk = (rate_risk * 0.35 + qe_risk * 0.25 + 
+                     dollar_risk * 0.25 + inflation_risk * 0.15)
+        
+        # 对 A 股的影响
+        a_share_impact = self._assess_a_share_impact(total_risk, fed_state)
+        
+        return {
+            'fed_risk_score': round(total_risk, 1),
+            'rate_risk': rate_risk,
+            'qe_risk': qe_risk,
+            'dollar_risk': dollar_risk,
+            'inflation_risk': inflation_risk,
+            'fed_state': fed_state,
+            'a_share_impact': a_share_impact,
+            'recommendation': self._generate_fed_recommendation(total_risk, fed_state)
+        }
+    
+    def _calculate_rate_risk(self, rate: float, trend: str) -> float:
+        """计算利率风险"""
+        base_risk = 50
+        
+        if trend == 'hike':
+            base_risk += 20
+        elif trend == 'cut':
+            base_risk -= 15
+        
+        if rate > 5.0:
+            base_risk += 15
+        elif rate < 3.0:
+            base_risk -= 10
+        
+        return max(0, min(100, base_risk))
+    
+    def _calculate_qe_risk(self, qe_status: str) -> float:
+        """计算量化政策风险"""
+        if qe_status == 'tightening':
+            return 70
+        elif qe_status == 'neutral':
+            return 50
+        else:
+            return 30
+    
+    def _calculate_dollar_risk(self, dollar_index: float) -> float:
+        """计算美元风险"""
+        if dollar_index > 105:
+            return 75
+        elif dollar_index > 100:
+            return 60
+        elif dollar_index > 95:
+            return 45
+        else:
+            return 35
+    
+    def _calculate_inflation_risk(self, inflation: float) -> float:
+        """计算通胀风险"""
+        if inflation > 4.0:
+            return 70
+        elif inflation > 3.0:
+            return 55
+        elif inflation > 2.0:
+            return 40
+        else:
+            return 30
+    
+    def _assess_a_share_impact(self, fed_risk: float, fed_state: Dict) -> Dict:
+        """评估对 A 股的影响"""
+        impact_level = 'medium'
+        if fed_risk >= 65:
+            impact_level = 'high'
+        elif fed_risk <= 40:
+            impact_level = 'low'
+        
+        sectors_affected = {
+            'high_sensitivity': ['金融', '出口导向', '外资重仓'],
+            'medium_sensitivity': ['科技', '消费', '制造'],
+            'low_sensitivity': ['内需', '公用事业', '防御性']
+        }
+        
+        return {
+            'impact_level': impact_level,
+            'impact_score': round(fed_risk * 0.6, 1),  # 美联储风险对 A 股的影响系数
+            'sectors_affected': sectors_affected
+        }
+    
+    def analyze_oil_risk(self) -> Dict:
+        """
+        分析石油价格风险
+        包括：油价波动、能源安全、通胀压力等
+        """
+        # 模拟油价数据
+        oil_data = {
+            'current_price': 82.5,  # 布伦特原油价格（美元/桶）
+            'price_change_1m': 5.2,  # 1 个月涨幅%
+            'price_change_3m': -3.8,  # 3 个月涨幅%
+            'price_change_1y': 12.5,  # 1 年涨幅%
+            'inventory_level': 'normal',  # inventory: low, normal, high
+            'opec_status': 'maintain'  # opec 政策：cut, maintain, increase
+        }
+        
+        # 计算油价风险
+        price_risk = self._calculate_oil_price_risk(oil_data['current_price'])
+        volatility_risk = self._calculate_oil_volatility_risk(oil_data)
+        supply_risk = self._calculate_oil_supply_risk(oil_data)
+        
+        # 综合风险
+        total_risk = (price_risk * 0.3 + volatility_risk * 0.4 + supply_risk * 0.3)
+        
+        # 对 A 股的影响
+        a_share_impact = self._assess_oil_a_share_impact(total_risk, oil_data)
+        
+        return {
+            'oil_risk_score': round(total_risk, 1),
+            'price_risk': price_risk,
+            'volatility_risk': volatility_risk,
+            'supply_risk': supply_risk,
+            'oil_data': oil_data,
+            'a_share_impact': a_share_impact,
+            'recommendation': self._generate_oil_recommendation(total_risk, oil_data)
+        }
+    
+    def _calculate_oil_price_risk(self, price: float) -> float:
+        """计算油价水平风险"""
+        if price > 100:
+            return 80
+        elif price > 85:
+            return 65
+        elif price > 70:
+            return 50
+        elif price > 55:
+            return 40
+        else:
+            return 35
+    
+    def _calculate_oil_volatility_risk(self, oil_data: Dict) -> float:
+        """计算油价波动风险"""
+        volatility = abs(oil_data['price_change_1m']) + abs(oil_data['price_change_3m'])
+        
+        if volatility > 20:
+            return 80
+        elif volatility > 15:
+            return 65
+        elif volatility > 10:
+            return 50
+        else:
+            return 40
+    
+    def _calculate_oil_supply_risk(self, oil_data: Dict) -> float:
+        """计算供应风险"""
+        if oil_data['inventory_level'] == 'low':
+            return 75
+        elif oil_data['opec_status'] == 'cut':
+            return 70
+        else:
+            return 50
+    
+    def _assess_oil_a_share_impact(self, oil_risk: float, oil_data: Dict) -> Dict:
+        """评估油价对 A 股的影响"""
+        # 油价上涨对不同行业的影响
+        sector_impacts = {
+            'benefit': ['石油石化', '煤炭', '新能源'],
+            'hurt': ['航空', '物流', '化工', '塑料'],
+            'neutral': ['银行', '保险', '医药']
+        }
+        
+        impact_level = 'medium'
+        if oil_risk >= 65:
+            impact_level = 'high'
+        elif oil_risk <= 40:
+            impact_level = 'low'
+        
+        return {
+            'impact_level': impact_level,
+            'impact_score': round(oil_risk * 0.5, 1),
+            'sector_impacts': sector_impacts
+        }
+    
+    def get_comprehensive_macro_risk(self, stock_code: str, stock_name: str,
+                                     industry: str, news_items: List[Dict]) -> Dict:
+        """
+        获取综合宏观风险评分
+        """
+        # 各维度风险分析
+        policy_risk = self.analyze_policy_risk(stock_code, stock_name, industry, news_items)
+        geopolitical_risk = self.analyze_geopolitical_risk()
+        fed_risk = self.analyze_fed_risk()
+        oil_risk = self.analyze_oil_risk()
+        
+        # 综合宏观风险（加权平均）
+        weights = {
+            'policy': 0.35,
+            'geopolitical': 0.25,
+            'fed': 0.20,
+            'oil': 0.20
+        }
+        
+        total_macro_risk = (
+            policy_risk['policy_risk_score'] * weights['policy'] +
+            geopolitical_risk['geopolitical_risk_score'] * weights['geopolitical'] +
+            fed_risk['fed_risk_score'] * weights['fed'] +
+            oil_risk['oil_risk_score'] * weights['oil']
+        )
+        
+        # 确定综合风险等级
+        if total_macro_risk >= 70:
+            level = 'high'
+            level_name = '高风险'
+            color = '#EF5350'
+        elif total_macro_risk >= 40:
+            level = 'medium'
+            level_name = '中风险'
+            color = '#FFCA28'
+        else:
+            level = 'low'
+            level_name = '低风险'
+            color = '#66BB6A'
+        
+        return {
+            'total_macro_risk': round(total_macro_risk, 1),
+            'risk_level': level,
+            'risk_level_name': level_name,
+            'risk_color': color,
+            'weights': weights,
+            'policy_risk': policy_risk,
+            'geopolitical_risk': geopolitical_risk,
+            'fed_risk': fed_risk,
+            'oil_risk': oil_risk,
+            'summary': self._generate_macro_summary(
+                policy_risk, geopolitical_risk, fed_risk, oil_risk
+            )
+        }
+    
+    def _generate_macro_summary(self, policy, geopolitical, fed, oil) -> str:
+        """生成宏观风险总结"""
+        risks = [
+            ('政策风险', policy['policy_risk_score']),
+            ('地缘政治', geopolitical['geopolitical_risk_score']),
+            ('美联储政策', fed['fed_risk_score']),
+            ('油价波动', oil['oil_risk_score'])
+        ]
+        
+        max_risk = max(risks, key=lambda x: x[1])
+        
+        return f"综合宏观风险评分{self._get_total_macro_risk(policy, geopolitical, fed, oil):.0f}分，" \
+               f"主要风险源：{max_risk[0]}（{max_risk[1]:.0f}分），需重点关注。"
+    
+    def _get_total_macro_risk(self, policy, geopolitical, fed, oil) -> float:
+        """获取总宏观风险"""
+        weights = {'policy': 0.35, 'geopolitical': 0.25, 'fed': 0.20, 'oil': 0.20}
+        return (
+            policy['policy_risk_score'] * weights['policy'] +
+            geopolitical['geopolitical_risk_score'] * weights['geopolitical'] +
+            fed['fed_risk_score'] * weights['fed'] +
+            oil['oil_risk_score'] * weights['oil']
+        )
+    
+    def _generate_policy_recommendation(self, risk_score: float, industry_sensitivity: float) -> str:
+        """生成政策风险建议"""
+        if risk_score >= 70:
+            return "⚠️ 政策风险较高，建议密切关注政策动向，考虑降低仓位或对冲风险。"
+        elif risk_score >= 40:
+            return "⚡ 政策风险中等，建议关注相关行业政策变化，适时调整投资策略。"
+        else:
+            return "✅ 政策风险较低，当前政策环境相对有利，可继续持有。"
+    
+    def _generate_fed_recommendation(self, risk_score: float, fed_state: Dict) -> str:
+        """生成美联储风险建议"""
+        if risk_score >= 65:
+            return "⚠️ 美联储政策风险较高，美元走强可能压制 A 股，建议谨慎操作。"
+        elif risk_score >= 45:
+            return "⚡ 美联储政策风险中等，关注利率决议和美元走势。"
+        else:
+            return "✅ 美联储政策风险较低，外部环境相对稳定。"
+    
+    def _generate_oil_recommendation(self, risk_score: float, oil_data: Dict) -> str:
+        """生成油价风险建议"""
+        if risk_score >= 65:
+            return "⚠️ 油价风险较高，关注能源板块机会，警惕航空物流等成本敏感行业。"
+        elif risk_score >= 45:
+            return "⚡ 油价风险中等，关注油价走势对相关行业的影响。"
+        else:
+            return "✅ 油价风险较低，能源成本压力可控。"
