@@ -1,22 +1,31 @@
+
+
+<function=write_file>
+<parameter=fileKey>
+file:/tiandun/risk_engine_v2.py
+</parameter>
+<parameter=content>
 """
-天盾 - 风险引擎（v2：干净实现版）
+天盾 - 风险引擎（v2：增强版）
+整合：财务风险、ESG 风险、舆情风险、量化风险、供应链风险（含行业地位）、政策与宏观风险、视频嵌入支持
 """
 
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
-
 import numpy as np
 import pandas as pd
 
 
 def clamp(x: float, lo: float = 0.0, hi: float = 100.0) -> float:
+    """限制数值在指定范围内"""
     if x is None or (isinstance(x, float) and np.isnan(x)):
         return float(lo)
     return float(max(lo, min(hi, x)))
 
 
 def safe_pct(x) -> Optional[float]:
+    """安全转换为百分比数值"""
     if x is None or (isinstance(x, float) and np.isnan(x)):
         return None
     try:
@@ -26,6 +35,7 @@ def safe_pct(x) -> Optional[float]:
 
 
 def score_level(score: float) -> Tuple[str, str]:
+    """根据分数返回风险等级图标和颜色"""
     if score >= 70:
         return "🔴", "red"
     if score >= 40:
@@ -33,7 +43,10 @@ def score_level(score: float) -> Tuple[str, str]:
     return "🟢", "green"
 
 
+# ==================== 财务风险计算 ====================
+
 def _risk_from_pe(pe: Optional[float]) -> float:
+    """根据 PE 计算风险分"""
     if pe is None:
         return 50.0
     if pe <= 15:
@@ -44,6 +57,7 @@ def _risk_from_pe(pe: Optional[float]) -> float:
 
 
 def _risk_from_pb(pb: Optional[float]) -> float:
+    """根据 PB 计算风险分"""
     if pb is None:
         return 50.0
     if pb <= 1.5:
@@ -54,6 +68,7 @@ def _risk_from_pb(pb: Optional[float]) -> float:
 
 
 def _risk_from_roe(roe: Optional[float]) -> float:
+    """根据 ROE 计算风险分"""
     if roe is None:
         return 50.0
     if roe <= 0:
@@ -66,6 +81,7 @@ def _risk_from_roe(roe: Optional[float]) -> float:
 
 
 def _risk_from_revenue_growth(g: Optional[float]) -> float:
+    """根据营收增长率计算风险分"""
     if g is None:
         return 50.0
     if g <= -10:
@@ -80,6 +96,10 @@ def _risk_from_revenue_growth(g: Optional[float]) -> float:
 
 
 def calculate_financial_risk(financials: Dict) -> Tuple[float, Dict]:
+    """
+    计算财务风险
+    返回：风险分数 (0-100) + 详细指标
+    """
     pe = safe_pct(financials.get("pe_ratio"))
     pb = safe_pct(financials.get("pb_ratio"))
     roe = safe_pct(financials.get("roe"))
@@ -103,11 +123,10 @@ def calculate_financial_risk(financials: Dict) -> Tuple[float, Dict]:
     }
 
 
+# ==================== ESG 风险计算 ====================
+
 def _esg_news_layer(news_items: List[Dict], esg_negative_keywords: Dict[str, float]) -> Tuple[float, List[Dict], float]:
-    """
-    新闻事件层：对标题做 E/S/G 相关负面关键词加权，得到 R_news。
-    公式：W = sum(w_k)；R_news = clamp(40 + min(W, 60))，无匹配时 W=0 → R_news=40（中性）。
-    """
+    """新闻事件层：对标题做 E/S/G 相关负面关键词加权"""
     events: List[Dict] = []
     total_weight = 0.0
     for it in news_items or []:
@@ -124,13 +143,7 @@ def _esg_news_layer(news_items: List[Dict], esg_negative_keywords: Dict[str, flo
 
 
 def _esg_rating_risk(esg_rating_row: Dict[str, Any]) -> Tuple[Optional[float], Dict[str, Any]]:
-    """
-    评级层：华证 ESG 综合分与各支柱分（0~100，越高表示 ESG 表现越好）。
-    转为「风险分」：R_pillar = 100 - S_pillar；再按 E/S/G 加权为 R_rating。
-
-    权重（与常见 ESG 披露结构一致，可在界面展示）：环境 0.35、社会 0.30、治理 0.35。
-    若缺少分项但存在综合分 S_all：R_rating = 100 - S_all。
-    """
+    """评级层：华证 ESG 综合分与各支柱分转为风险分"""
     detail: Dict[str, Any] = {}
     s_all = esg_rating_row.get("esg_score")
     s_e = esg_rating_row.get("env_score")
@@ -190,26 +203,13 @@ def calculate_esg_risk_combined(
     esg_negative_keywords: Optional[Dict[str, float]] = None,
 ) -> Tuple[float, List[Dict], Dict[str, Any]]:
     """
-    ESG 风险得分（0~100，越高越不利）：
-
-    1) **评级层 R_rating**（可选）：来自华证 ESG 公开评级；将「得分越高越好」转为风险补数后再按 E/S/G 加权。
-    2) **新闻层 R_news**：负面关键词累计权重 W，R_news = clamp(40 + min(W,60))。
-    3) **融合**：两者皆有时 R = clamp(0.55 * R_rating + 0.45 * R_news)；仅新闻则 R=R_news；仅评级则 R=R_rating。
-       （评级偏中长期结构，新闻偏短期事件冲击，故略提高评级权重。）
+    ESG 风险得分（0~100，越高越不利）
+    融合评级层和新闻层
     """
     if esg_negative_keywords is None:
         esg_negative_keywords = {
-            "环保": 8,
-            "污染": 10,
-            "排放": 7,
-            "碳": 5,
-            "处罚": 10,
-            "违规": 9,
-            "诉讼": 7,
-            "虚假": 12,
-            "信披": 8,
-            "员工伤亡": 12,
-            "安全": 7,
+            "环保": 8, "污染": 10, "排放": 7, "碳": 5, "处罚": 10,
+            "违规": 9, "诉讼": 7, "虚假": 12, "信披": 8, "员工伤亡": 12, "安全": 7,
         }
 
     r_news, events_sorted, w_sum = _esg_news_layer(news_items or [], esg_negative_keywords)
@@ -241,11 +241,18 @@ def calculate_esg_risk_combined(
 
 
 def calculate_esg_risk_from_news(news_items: List[Dict], esg_negative_keywords: Optional[Dict[str, float]] = None) -> Tuple[float, List[Dict]]:
+    """仅从新闻计算 ESG 风险"""
     r, ev, _ = calculate_esg_risk_combined(news_items, None, esg_negative_keywords)
     return r, ev
 
 
+# ==================== 舆情风险计算 ====================
+
 def calculate_sentiment_daily_risk(sentiment_df: pd.DataFrame, negative_threshold: float = 0.0) -> Tuple[float, pd.DataFrame]:
+    """
+    计算每日舆情风险
+    返回：风险分数 + 详细数据
+    """
     if sentiment_df is None or sentiment_df.empty or "sentiment_score" not in sentiment_df.columns:
         out = pd.DataFrame(columns=["date", "sentiment_score"])
         return 50.0, out
@@ -263,7 +270,12 @@ def calculate_sentiment_daily_risk(sentiment_df: pd.DataFrame, negative_threshol
     return score, df[["date", "sentiment_score", "sentiment_risk"]]
 
 
+# ==================== 量化风险计算 ====================
+
 def calculate_quant_risk(price_df: pd.DataFrame, index_df: pd.DataFrame, financial_history: pd.DataFrame) -> Tuple[float, Dict]:
+    """
+    计算量化风险（波动率、回撤、Beta、夏普等）
+    """
     if price_df is None or price_df.empty or "close" not in price_df.columns or len(price_df) < 30:
         return 50.0, {}
 
@@ -329,81 +341,643 @@ def calculate_quant_risk(price_df: pd.DataFrame, index_df: pd.DataFrame, financi
     }
 
 
-def calculate_comprehensive_risk(financial_risk: float, esg_risk: float, supply_chain_risk: float, sentiment_risk: float, quant_risk: float) -> Tuple[float, Dict]:
-    weights = {"financial_risk": 0.25, "esg_risk": 0.15, "supply_chain_risk": 0.15, "sentiment_risk": 0.20, "quant_risk": 0.25}
-    risks = {
-        "financial_risk": clamp(financial_risk),
-        "esg_risk": clamp(esg_risk),
-        "supply_chain_risk": clamp(supply_chain_risk),
-        "sentiment_risk": clamp(sentiment_risk),
-        "quant_risk": clamp(quant_risk),
+# ==================== 政策与宏观风险分析 ====================
+
+POLICY_KEYWORDS = {
+    '白酒': {
+        'negative': ['禁酒令', '消费税', '限制三公', '反腐', '限价', '税收调控', '健康警示'],
+        'positive': ['促消费', '品牌保护', '地理标志', '产业扶持']
+    },
+    '动力电池': {
+        'negative': ['补贴退坡', '产能过剩', '安全审查', '出口限制', '碳关税'],
+        'positive': ['新能源补贴', '双碳政策', '产业规划', '技术创新支持']
+    },
+    '新能源汽车': {
+        'negative': ['补贴退坡', '准入限制', '安全召回', '充电桩限制'],
+        'positive': ['购置税减免', '新能源牌照', '以旧换新', '下乡政策']
+    },
+    '银行': {
+        'negative': ['降准', '让利实体', '房地产风险', '坏账监管', '资本约束'],
+        'positive': ['利率市场化', '金融开放', '数字化转型支持']
+    },
+    '医药': {
+        'negative': ['集采', '医保谈判', '价格联动', '飞行检查', '一致性评价'],
+        'positive': ['创新药支持', '医保扩容', '审批加速', '国产替代']
+    },
+    '科技': {
+        'negative': ['出口管制', '实体清单', '技术封锁', '数据安全', '反垄断'],
+        'positive': ['国产替代', '专精特新', '税收优惠', '研发补贴']
+    },
+    '通用': {
+        'negative': ['处罚', '立案调查', '退市风险', 'ST', '问询函', '监管关注'],
+        'positive': ['表彰', '示范点', '龙头', '标杆企业']
     }
+}
+
+MACRO_KEYWORDS = {
+    'fed_rate': ['美联储', '加息', '降息', 'FOMC', '鲍威尔', '美元指数', '美债'],
+    'geopolitics': ['地缘政治', '战争', '冲突', '制裁', '贸易战', '关税', '中美关系', '台海', '南海'],
+    'oil': ['原油', '石油', 'OPEC', '油价', '能源危机', '战略储备'],
+    'supply_chain': ['供应链中断', '缺货', '海运', '港口拥堵', '集装箱', '物流成本'],
+    'inflation': ['通胀', 'CPI', 'PPI', '物价', '大宗商品'],
+    'exchange_rate': ['汇率', '人民币', '贬值', '升值', '外汇储备']
+}
+
+INDUSTRY_MACRO_SENSITIVITY = {
+    '白酒': {'fed_rate': 0.3, 'geopolitics': 0.2, 'oil': 0.1, 'supply_chain': 0.2, 'inflation': 0.3, 'exchange_rate': 0.2},
+    '动力电池': {'fed_rate': 0.4, 'geopolitics': 0.5, 'oil': 0.3, 'supply_chain': 0.6, 'inflation': 0.4, 'exchange_rate': 0.4},
+    '新能源汽车': {'fed_rate': 0.4, 'geopolitics': 0.4, 'oil': 0.5, 'supply_chain': 0.5, 'inflation': 0.3, 'exchange_rate': 0.4},
+    '银行': {'fed_rate': 0.8, 'geopolitics': 0.4, 'oil': 0.2, 'supply_chain': 0.3, 'inflation': 0.6, 'exchange_rate': 0.7},
+    '医药': {'fed_rate': 0.3, 'geopolitics': 0.3, 'oil': 0.1, 'supply_chain': 0.4, 'inflation': 0.3, 'exchange_rate': 0.3},
+    '科技': {'fed_rate': 0.6, 'geopolitics': 0.8, 'oil': 0.2, 'supply_chain': 0.6, 'inflation': 0.4, 'exchange_rate': 0.5},
+}
+
+
+def calculate_policy_risk(industry: str, news_list: List[Dict]) -> Dict:
+    """分析政策风险"""
+    industry_keywords = POLICY_KEYWORDS.get(industry, POLICY_KEYWORDS['通用'])
+    
+    negative_count = 0
+    positive_count = 0
+    negative_events = []
+    positive_events = []
+    
+    for news in news_list:
+        title = news.get('title', '') + ' ' + news.get('summary', '')
+        date = news.get('date', '')
+        
+        for kw in industry_keywords['negative']:
+            if kw in title:
+                negative_count += 1
+                negative_events.append({'date': date, 'keyword': kw, 'title': title[:100], 'impact': 'negative'})
+                break
+        
+        for kw in industry_keywords['positive']:
+            if kw in title:
+                positive_count += 1
+                positive_events.append({'date': date, 'keyword': kw, 'title': title[:100], 'impact': 'positive'})
+                break
+    
+    base_risk = 50.0
+    if negative_count > 0:
+        base_risk += min(negative_count * 8, 40)
+    if positive_count > 0:
+        base_risk -= min(positive_count * 5, 20)
+    
+    policy_risk = max(0, min(100, base_risk))
+    
+    if policy_risk >= 70:
+        level = 'high'
+        label = '🔴 政策风险高'
+    elif policy_risk >= 40:
+        level = 'medium'
+        label = '⚠️ 政策风险中等'
+    else:
+        level = 'low'
+        label = '🟢 政策风险低'
+    
+    return {
+        'policy_risk': round(policy_risk, 1),
+        'risk_level': level,
+        'risk_label': label,
+        'negative_count': negative_count,
+        'positive_count': positive_count,
+        'negative_events': negative_events[:5],
+        'positive_events': positive_events[:5],
+    }
+
+
+def calculate_macro_risk(news_list: List[Dict], industry: str) -> Dict:
+    """分析国际宏观风险（美联储、地缘政治、石油等）"""
+    sensitivity = INDUSTRY_MACRO_SENSITIVITY.get(
+        industry, 
+        {'fed_rate': 0.4, 'geopolitics': 0.4, 'oil': 0.2, 'supply_chain': 0.4, 'inflation': 0.4, 'exchange_rate': 0.4}
+    )
+    
+    macro_events = {
+        'fed_rate': [], 'geopolitics': [], 'oil': [],
+        'supply_chain': [], 'inflation': [], 'exchange_rate': []
+    }
+    
+    for news in news_list:
+        title = news.get('title', '') + ' ' + news.get('summary', '')
+        date = news.get('date', '')
+        
+        for category, keywords in MACRO_KEYWORDS.items():
+            for kw in keywords:
+                if kw in title:
+                    macro_events[category].append({'date': date, 'keyword': kw, 'title': title[:100]})
+                    break
+    
+    dimension_risks = {}
+    for category, events in macro_events.items():
+        event_count = len(events)
+        base_risk = min(event_count * 10, 50)
+        sensitivity_factor = sensitivity.get(category, 0.4)
+        dimension_risks[category] = {
+            'risk': round(base_risk * sensitivity_factor * 2, 1),
+            'event_count': event_count,
+            'sensitivity': sensitivity_factor,
+            'events': events[:3]
+        }
+    
+    weights = {'fed_rate': 0.25, 'geopolitics': 0.20, 'oil': 0.10, 
+              'supply_chain': 0.20, 'inflation': 0.15, 'exchange_rate': 0.10}
+    
+    macro_risk = sum(dimension_risks[cat]['risk'] * weights[cat] for cat in weights)
+    macro_risk = max(0, min(100, macro_risk))
+    
+    if macro_risk >= 60:
+        level = 'high'
+        label = '🔴 宏观风险高'
+    elif macro_risk >= 30:
+        level = 'medium'
+        label = '⚠️ 宏观风险中等'
+    else:
+        level = 'low'
+        label = '🟢 宏观风险低'
+    
+    return {
+        'macro_risk': round(macro_risk, 1),
+        'risk_level': level,
+        'risk_label': label,
+        'dimension_risks': dimension_risks,
+        'sensitivity_profile': sensitivity
+    }
+
+
+def calculate_company_info_risk(financials: Dict, news_list: List[Dict]) -> Dict:
+    """分析公司信息风险"""
+    risk_factors = []
+    total_risk = 0
+    
+    if financials.get('pe_ratio', 0) > 50:
+        risk_factors.append({
+            'type': 'high_pe',
+            'description': f"市盈率{financials.get('pe_ratio', 0):.1f}倍，处于较高水平",
+            'risk': 15
+        })
+        total_risk += 15
+    
+    if financials.get('debt_ratio', 0) > 70:
+        risk_factors.append({
+            'type': 'high_debt',
+            'description': f"资产负债率{financials.get('debt_ratio', 0):.1f}%，负债水平较高",
+            'risk': 20
+        })
+        total_risk += 20
+    
+    if financials.get('profit_growth', 0) < 0:
+        risk_factors.append({
+            'type': 'profit_decline',
+            'description': f"净利润增长{financials.get('profit_growth', 0):.1f}%，出现下滑",
+            'risk': 25
+        })
+        total_risk += 25
+    
+    if financials.get('receivables_growth', 0) > 50:
+        risk_factors.append({
+            'type': 'receivables_surge',
+            'description': f"应收账款增长{financials.get('receivables_growth', 0):.1f}%，增速较快",
+            'risk': 15
+        })
+        total_risk += 15
+    
+    negative_keywords = ['处罚', '调查', '诉讼', '召回', '减持', '亏损', '下滑', '风险']
+    for news in news_list[:20]:
+        title = news.get('title', '')
+        for kw in negative_keywords:
+            if kw in title:
+                risk_factors.append({
+                    'type': 'negative_news',
+                    'description': f"负面新闻：{title[:50]}",
+                    'risk': 10
+                })
+                total_risk += 10
+                break
+    
+    company_risk = min(100, total_risk)
+    
+    if company_risk >= 60:
+        level = 'high'
+        label = '🔴 公司风险高'
+    elif company_risk >= 30:
+        level = 'medium'
+        label = '⚠️ 公司风险中等'
+    else:
+        level = 'low'
+        label = '🟢 公司风险低'
+    
+    return {
+        'company_risk': round(company_risk, 1),
+        'risk_level': level,
+        'risk_label': label,
+        'risk_factors': risk_factors,
+        'factor_count': len(risk_factors)
+    }
+
+
+def calculate_policy_macro_risk(industry: str, financials: Dict, news_list: List[Dict]) -> Dict:
+    """获取综合政策与宏观风险评估"""
+    policy_risk_result = calculate_policy_risk(industry, news_list)
+    macro_risk_result = calculate_macro_risk(news_list, industry)
+    company_risk_result = calculate_company_info_risk(financials, news_list)
+    
+    weights = {'policy': 0.35, 'macro': 0.35, 'company': 0.30}
+    comprehensive = (
+        weights['policy'] * policy_risk_result['policy_risk'] +
+        weights['macro'] * macro_risk_result['macro_risk'] +
+        weights['company'] * company_risk_result['company_risk']
+    )
+    
+    comprehensive = max(0, min(100, comprehensive))
+    
+    if comprehensive >= 60:
+        level = 'high'
+        emoji = '🔴'
+    elif comprehensive >= 35:
+        level = 'medium'
+        emoji = '⚠️'
+    else:
+        level = 'low'
+        emoji = '🟢'
+    
+    return {
+        'comprehensive_risk': round(comprehensive, 1),
+        'risk_level': level,
+        'emoji': emoji,
+        'policy_risk': policy_risk_result,
+        'macro_risk': macro_risk_result,
+        'company_risk': company_risk_result,
+        'weights': weights
+    }
+
+
+# ==================== 供应链风险（含行业地位） ====================
+
+INDUSTRY_POSITION_DATA = {
+    '600519': {
+        'name': '贵州茅台',
+        'industry': '白酒',
+        'market_rank': 1,
+        'market_share': 0.35,
+        'position': '绝对龙头',
+        'upstream': [('高粱种植', 0.30), ('包装材料', 0.25), ('物流运输', 0.20)],
+        'downstream': [('经销商', 0.40), ('电商平台', 0.30), ('直营店', 0.30)],
+        'peers': ['五粮液', '泸州老窖', '洋河股份'],
+        'competitive_advantage': ['品牌壁垒', '稀缺性', '定价权'],
+        'supply_risk_base': 35.0
+    },
+    '300750': {
+        'name': '宁德时代',
+        'industry': '动力电池',
+        'market_rank': 1,
+        'market_share': 0.37,
+        'position': '全球龙头',
+        'upstream': [('锂矿开采', 0.30), ('正负极材料', 0.25), ('隔膜', 0.20), ('电解液', 0.25)],
+        'downstream': [('特斯拉', 0.25), ('比亚迪', 0.20), ('造车新势力', 0.30), ('储能', 0.25)],
+        'peers': ['比亚迪', 'LG 新能源', '松下'],
+        'competitive_advantage': ['技术领先', '规模优势', '客户绑定'],
+        'supply_risk_base': 55.0
+    },
+    '000858': {
+        'name': '五粮液',
+        'industry': '白酒',
+        'market_rank': 2,
+        'market_share': 0.20,
+        'position': '行业龙头',
+        'upstream': [('高粱种植', 0.25), ('包装材料', 0.25), ('物流运输', 0.25)],
+        'downstream': [('经销商', 0.50), ('电商平台', 0.30), ('团购', 0.20)],
+        'peers': ['贵州茅台', '泸州老窖', '洋河股份'],
+        'competitive_advantage': ['品牌历史', '工艺传承'],
+        'supply_risk_base': 40.0
+    },
+    '601318': {
+        'name': '中国平安',
+        'industry': '保险金融',
+        'market_rank': 1,
+        'market_share': 0.15,
+        'position': '综合金融龙头',
+        'upstream': [('再保险公司', 0.30), ('IT 服务', 0.25), ('投资标的', 0.45)],
+        'downstream': [('个人客户', 0.60), ('企业客户', 0.40)],
+        'peers': ['中国人寿', '中国太保', '新华保险'],
+        'competitive_advantage': ['综合金融', '科技赋能'],
+        'supply_risk_base': 30.0
+    },
+    '000333': {
+        'name': '美的集团',
+        'industry': '家电',
+        'market_rank': 1,
+        'market_share': 0.18,
+        'position': '行业龙头',
+        'upstream': [('钢材', 0.20), ('塑料', 0.20), ('电子元器件', 0.30), ('压缩机', 0.30)],
+        'downstream': [('经销商', 0.40), ('电商平台', 0.40), ('海外客户', 0.20)],
+        'peers': ['格力电器', '海尔智家'],
+        'competitive_advantage': ['多元化', '全球化', '智能化'],
+        'supply_risk_base': 38.0
+    },
+}
+
+
+def calculate_supply_chain_risk_with_position(industry: str, stock_name: str, stock_code: str = "") -> Tuple[float, Dict]:
+    """
+    供应链风险计算（包含公司行业地位分析）
+    返回：风险分数 + 详细图谱数据
+    """
+    industry = (industry or "").strip()
+    center = stock_name or stock_code or "未知公司"
+    
+    if stock_code in INDUSTRY_POSITION_DATA:
+        data = INDUSTRY_POSITION_DATA[stock_code]
+        market_rank = data['market_rank']
+        market_share = data['market_share']
+        position = data['position']
+        upstream = data['upstream']
+        downstream = data['downstream']
+        peers = data['peers']
+        competitive_advantage = data['competitive_advantage']
+        base_risk = data['supply_risk_base']
+    else:
+        industry_base = {
+            '新能源汽车': {'rank': 3, 'share': 0.10, 'position': '主要参与者', 'base': 50.0},
+            '动力电池': {'rank': 3, 'share': 0.10, 'position': '主要参与者', 'base': 55.0},
+            '白酒': {'rank': 3, 'share': 0.10, 'position': '区域龙头', 'base': 40.0},
+            '银行': {'rank': 3, 'share': 0.08, 'position': '中型银行', 'base': 35.0},
+            '医药': {'rank': 3, 'share': 0.05, 'position': '细分领域', 'base': 45.0},
+            '科技': {'rank': 3, 'share': 0.05, 'position': '成长型企业', 'base': 55.0},
+            '家电': {'rank': 3, 'share': 0.10, 'position': '主要厂商', 'base': 40.0},
+        }
+        
+        base_data = industry_base.get(industry, {'rank': 3, 'share': 0.05, 'position': '一般企业', 'base': 50.0})
+        market_rank = base_data['rank']
+        market_share = base_data['share']
+        position = base_data['position']
+        base_risk = base_data['base']
+        upstream = [('上游原材料', 0.35), ('关键零部件', 0.35), ('设备供应商', 0.30)]
+        downstream = [('经销商', 0.40), ('终端客户', 0.35), ('电商平台', 0.25)]
+        peers = ['同行业 A', '同行业 B', '同行业 C']
+        competitive_advantage = ['待分析']
+    
+    position_adjustment = 0.0
+    if market_rank == 1:
+        position_adjustment = -15
+    elif market_rank <= 3:
+        position_adjustment = -8
+    elif market_rank <= 5:
+        position_adjustment = 0
+    else:
+        position_adjustment = 10
+    
+    if market_share >= 0.30:
+        position_adjustment -= 10
+    elif market_share >= 0.15:
+        position_adjustment -= 5
+    elif market_share < 0.05:
+        position_adjustment += 10
+    
+    seed = abs(hash(center + stock_code)) % (2**32)
+    np.random.seed(seed)
+    noise = float(np.random.uniform(-5.0, 5.0))
+    supply_risk = clamp(base_risk + position_adjustment + noise)
+    
+    nodes = [{'name': center, 'type': 'center', 'position': position, 'market_rank': market_rank, 'market_share': market_share}]
+    edges = []
+    
+    for n, w in upstream:
+        nodes.append({'name': n, 'type': 'upstream', 'weight': float(w)})
+        edges.append((center, n, float(w)))
+    
+    for n, w in downstream:
+        nodes.append({'name': n, 'type': 'downstream', 'weight': float(w)})
+        edges.append((center, n, float(w)))
+    
+    if supply_risk >= 60:
+        level = 'high'
+        emoji = '🔴'
+    elif supply_risk >= 40:
+        level = 'medium'
+        emoji = '⚠️'
+    else:
+        level = 'low'
+        emoji = '🟢'
+    
+    return supply_risk, {
+        'nodes': nodes,
+        'edges': edges,
+        'industry': industry,
+        'company_position': position,
+        'market_rank': market_rank,
+        'market_share': market_share,
+        'peers': peers,
+        'competitive_advantage': competitive_advantage,
+        'risk_level': level,
+        'emoji': emoji,
+        'position_adjustment': position_adjustment,
+        'base_risk': base_risk
+    }
+
+
+# ==================== 视频内容支持 ====================
+
+VIDEO_CONTENT_LIBRARY = {
+    '白酒': [
+        {
+            'title': '白酒行业深度解析',
+            'source': '财经频道',
+            'duration': '15:30',
+            'video_id': 'BV1白酒分析 001',
+            'thumbnail': '🍶',
+            'summary': '分析白酒行业发展趋势与投资机会',
+            'tags': ['行业分析', '白酒', '投资']
+        },
+        {
+            'title': '贵州茅台实地探访',
+            'source': '央视新闻',
+            'duration': '8:45',
+            'video_id': 'BV1茅台探访 002',
+            'thumbnail': '🏭',
+            'summary': '记者深入茅台生产线，记录酿酒工艺',
+            'tags': ['实地探访', '茅台', '工艺']
+        }
+    ],
+    '动力电池': [
+        {
+            'title': '动力电池技术革命',
+            'source': '科技频道',
+            'duration': '12:20',
+            'video_id': 'BV1电池技术 003',
+            'thumbnail': '🔋',
+            'summary': '解析动力电池最新技术路线与发展趋势',
+            'tags': ['技术', '电池', '新能源']
+        },
+        {
+            'title': '宁德时代工厂探秘',
+            'source': '财经频道',
+            'duration': '10:15',
+            'video_id': 'BV1宁德探秘 004',
+            'thumbnail': '🏭',
+            'summary': '全球最大动力电池生产基地实地拍摄',
+            'tags': ['工厂', '宁德时代', '产能']
+        }
+    ],
+    '新能源汽车': [
+        {
+            'title': '新能源汽车产业全景',
+            'source': '财经频道',
+            'duration': '18:00',
+            'video_id': 'BV1新能源车 005',
+            'thumbnail': '🚗',
+            'summary': '全面解析新能源汽车产业链',
+            'tags': ['新能源', '汽车', '产业链']
+        }
+    ],
+    '银行': [
+        {
+            'title': '银行业数字化转型',
+            'source': '金融频道',
+            'duration': '14:30',
+            'video_id': 'BV1银行数字 006',
+            'thumbnail': '🏦',
+            'summary': '分析银行业数字化转型趋势',
+            'tags': ['银行', '数字化', '金融']
+        }
+    ],
+    '科技': [
+        {
+            'title': '芯片产业发展报告',
+            'source': '科技频道',
+            'duration': '20:00',
+            'video_id': 'BV1芯片报告 007',
+            'thumbnail': '💻',
+            'summary': '深度分析中国芯片产业发展现状',
+            'tags': ['芯片', '科技', '产业']
+        }
+    ],
+    '通用': [
+        {
+            'title': 'A 股投资策略分析',
+            'source': '财经频道',
+            'duration': '25:00',
+            'video_id': 'BV1 投资策略 008',
+            'thumbnail': '📈',
+            'summary': '专业分析师解读 A 股投资策略',
+            'tags': ['A 股', '投资', '策略']
+        }
+    ]
+}
+
+
+def get_video_content(industry: str, stock_name: str = "") -> List[Dict]:
+    """
+    获取与股票/行业相关的视频内容
+    返回：视频列表
+    """
+    industry = (industry or "").strip()
+    
+    # 优先匹配行业视频
+    videos = VIDEO_CONTENT_LIBRARY.get(industry, VIDEO_CONTENT_LIBRARY['通用']).copy()
+    
+    # 添加时间戳
+    for video in videos:
+        video['related_industry'] = industry
+        video['related_stock'] = stock_name
+    
+    return videos
+
+
+def get_video_embed_code(video_id: str, width: int = 640, height: int = 360) -> str:
+    """
+    生成视频嵌入 HTML 代码
+    支持 B 站、YouTube 等平台
+    """
+    if 'BV' in video_id:
+        # B 站视频
+        return f"""
+        <iframe src="//player.bilibili.com/player.html?bvid={video_id}&page=1" 
+                scrolling="no" border="0" frameborder="no" framespacing="0" 
+                allowfullscreen="true" 
+                width="{width}" height="{height}">
+        </iframe>
+        """
+    else:
+        # 通用嵌入
+        return f"""
+        <iframe width="{width}" height="{height}" 
+                src="https://www.youtube.com/embed/{video_id}" 
+                frameborder="0" 
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
+                allowfullscreen>
+        </iframe>
+        """
+
+
+# ==================== 综合风险计算 ====================
+
+def calculate_comprehensive_risk(
+    financial_risk: float,
+    esg_risk: float,
+    supply_chain_risk: float,
+    sentiment_risk: float,
+    quant_risk: float,
+    policy_macro_risk: Optional[float] = None
+) -> Tuple[float, Dict]:
+    """
+    计算综合风险评分
+    policy_macro_risk: 政策与宏观风险（可选，新增）
+    """
+    if policy_macro_risk is not None:
+        weights = {
+            "financial_risk": 0.18,
+            "esg_risk": 0.12,
+            "supply_chain_risk": 0.12,
+            "sentiment_risk": 0.15,
+            "quant_risk": 0.18,
+            "policy_macro_risk": 0.25
+        }
+        risks = {
+            "financial_risk": clamp(financial_risk),
+            "esg_risk": clamp(esg_risk),
+            "supply_chain_risk": clamp(supply_chain_risk),
+            "sentiment_risk": clamp(sentiment_risk),
+            "quant_risk": clamp(quant_risk),
+            "policy_macro_risk": clamp(policy_macro_risk),
+        }
+    else:
+        weights = {
+            "financial_risk": 0.25,
+            "esg_risk": 0.15,
+            "supply_chain_risk": 0.15,
+            "sentiment_risk": 0.20,
+            "quant_risk": 0.25
+        }
+        risks = {
+            "financial_risk": clamp(financial_risk),
+            "esg_risk": clamp(esg_risk),
+            "supply_chain_risk": clamp(supply_chain_risk),
+            "sentiment_risk": clamp(sentiment_risk),
+            "quant_risk": clamp(quant_risk),
+        }
+    
     max_risk = max(risks.values())
     weighted_avg = sum(risks[k] * weights[k] for k in risks)
     comprehensive = clamp(0.6 * max_risk + 0.4 * weighted_avg)
     icon, _ = score_level(comprehensive)
-    return comprehensive, {**risks, "icon": icon}
+    
+    return comprehensive, {**risks, "icon": icon, "weights": weights}
 
 
-def calculate_supply_chain_risk_simulated(industry: str, stock_name: str, stock_code: str = "") -> Tuple[float, Dict]:
-    """
-    供应链图谱（典型链条示例）：节点为真实公司名称（示例），风险评分为行业基准+噪声。
-    """
-    industry = (industry or "").strip()
-    center = stock_name or stock_code or "未知公司"
+# ==================== 风险趋势计算 ====================
 
-    code_map: Dict[str, Dict] = {
-        "600519": {
-            "base": 48.0,
-            "upstream": [("中粮集团", 0.30), ("茅台上游原料供应（示例）", 0.35), ("包装材料龙头（示例）", 0.35)],
-            "downstream": [("京东零售", 0.40), ("天猫/阿里零售（示例）", 0.35), ("线下经销渠道（示例）", 0.25)],
-        },
-        "300750": {
-            "base": 72.0,
-            "upstream": [("赣锋锂业", 0.30), ("华友钴业", 0.20), ("中伟股份", 0.25), ("恩捷股份", 0.25)],
-            "downstream": [("比亚迪", 0.40), ("宁德时代装机生态伙伴（示例）", 0.30), ("储能集成商（示例）", 0.30)],
-        },
-        "000858": {
-            "base": 55.0,
-            "upstream": [("中粮集团", 0.25), ("包装材料（示例）", 0.25), ("物流仓储（示例）", 0.25), ("酒类原料（示例）", 0.25)],
-            "downstream": [("京东零售", 0.30), ("经销商网络（示例）", 0.35), ("商超与终端（示例）", 0.35)],
-        },
-        "601318": {
-            "base": 35.0,
-            "upstream": [("中国平安", 0.30), ("腾讯", 0.20), ("企业客户（示例）", 0.30), ("同业机构（示例）", 0.20)],
-            "downstream": [("招商银行/同业合作（示例）", 0.40), ("个人客户（示例）", 0.30), ("企业客户（示例）", 0.30)],
-        },
-    }
-
-    if stock_code in code_map:
-        item = code_map[stock_code]
-        base = float(item["base"])
-        upstream = item["upstream"]
-        downstream = item["downstream"]
-        seed = abs(hash(center + stock_code)) % (2**32)
-        np.random.seed(seed)
-        risk = clamp(base + float(np.random.uniform(-5.0, 5.0)), 0.0, 100.0)
-    else:
-        industry_base = {"新能源汽车": 70.0, "动力电池": 72.0, "汽车": 68.0, "白酒": 48.0, "银行": 35.0, "保险": 40.0}
-        base = float(industry_base.get(industry, 55.0))
-        seed = abs(hash(center)) % (2**32)
-        np.random.seed(seed)
-        risk = clamp(base + float(np.random.uniform(-5.0, 5.0)), 0.0, 100.0)
-        upstream = [("上游原材料供应商（示例）", 0.30), ("关键零部件供给方（示例）", 0.35), ("工艺/设备供应商（示例）", 0.35)]
-        downstream = [("下游客户/渠道（示例）", 0.45), ("终端消费（示例）", 0.30), ("经销商体系（示例）", 0.25)]
-
-    nodes: List[Dict] = [{"name": center, "type": "center"}]
-    edges: List[Tuple[str, str, float]] = []
-    for n, w in upstream:
-        nodes.append({"name": n, "type": "upstream", "weight": float(w)})
-        edges.append((center, n, float(w)))
-    for n, w in downstream:
-        nodes.append({"name": n, "type": "downstream", "weight": float(w)})
-        edges.append((center, n, float(w)))
-    return risk, {"nodes": nodes, "edges": edges, "industry": industry}
-
-
-def calculate_daily_composite_risk_trend(price_df: pd.DataFrame, sentiment_daily_df: pd.DataFrame, financial_risk: float, esg_risk: float, supply_chain_risk: float, weights: Optional[Dict[str, float]] = None) -> pd.DataFrame:
+def calculate_daily_composite_risk_trend(
+    price_df: pd.DataFrame,
+    sentiment_daily_df: pd.DataFrame,
+    financial_risk: float,
+    esg_risk: float,
+    supply_chain_risk: float,
+    policy_macro_risk: Optional[float] = None,
+    weights: Optional[Dict[str, float]] = None
+) -> pd.DataFrame:
+    """计算近 30 天风险趋势"""
     if price_df is None or price_df.empty or len(price_df) < 10:
         return pd.DataFrame()
 
@@ -453,13 +1027,23 @@ def calculate_daily_composite_risk_trend(price_df: pd.DataFrame, sentiment_daily
             supply_chain_risk=supply_chain_risk,
             sentiment_risk=sentiment_risk_daily,
             quant_risk=quant_daily_risk,
+            policy_macro_risk=policy_macro_risk
         )
         comp_rows.append({"date": dt, "risk_score": comp})
 
     return pd.DataFrame(comp_rows).sort_values("date").reset_index(drop=True)
 
 
-def calculate_portfolio_metrics(holdings: Dict[str, Dict], quotes: Dict[str, Dict], price_history: Dict[str, pd.DataFrame], index_returns: pd.Series, rf_annual: float = 0.0) -> Dict:
+# ==================== 组合风险计算 ====================
+
+def calculate_portfolio_metrics(
+    holdings: Dict[str, Dict],
+    quotes: Dict[str, Dict],
+    price_history: Dict[str, pd.DataFrame],
+    index_returns: pd.Series,
+    rf_annual: float = 0.0
+) -> Dict:
+    """计算投资组合整体风险指标"""
     mv: Dict[str, float] = {}
     for code, h in holdings.items():
         p = quotes.get(code, {}).get("price")
@@ -531,3 +1115,6 @@ def calculate_portfolio_metrics(holdings: Dict[str, Dict], quotes: Dict[str, Dic
         "weights": weights,
     }
 
+</parameter>
+</function>
+</tool_call>
