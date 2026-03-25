@@ -1,0 +1,350 @@
+"""
+天盾 - 多媒体视频模块（增强版）
+支持 YouTube/B 站/腾讯视频等真实视频嵌入
+"""
+
+import streamlit as st
+import pandas as pd
+from typing import Dict, List, Optional
+from datetime import datetime, timedelta
+import random
+import hashlib
+
+class VideoContentManager:
+    """视频内容管理器"""
+    
+    # 视频来源配置
+    VIDEO_SOURCES = {
+        'youtube': {
+            'base_url': 'https://www.youtube.com/embed/',
+            'api': 'https://www.youtube.com/oembed?url=',
+            'supported': True
+        },
+        'bilibili': {
+            'base_url': 'https://player.bilibili.com/player.html?bvid=',
+            'api': None,
+            'supported': True
+        },
+        'tencent': {
+            'base_url': 'https://v.qq.com/txp/iframe/player.html?vid=',
+            'api': None,
+            'supported': True
+        },
+        'youku': {
+            'base_url': 'https://player.youku.com/embed/',
+            'api': None,
+            'supported': True
+        }
+    }
+    
+    # 视频内容库（按股票分类）
+    VIDEO_TEMPLATES = {
+        # 贵州茅台
+        '600519': [
+            {
+                'title': '贵州茅台 2024 财报解读',
+                'source': 'bilibili',
+                'video_id': 'BV1xx411c7mD',  # 示例 B 站视频 ID
+                'duration': '12:35',
+                'thumbnail': '🍶',
+                'category': '财报',
+                'publish_date': '2024-03-15',
+                'sentiment': 'positive',
+                'description': '深度解析茅台最新财报，分析营收结构和利润变化'
+            },
+            {
+                'title': '白酒行业趋势分析',
+                'source': 'youtube',
+                'video_id': 'dQw4w9WgXcQ',  # 示例 YouTube 视频 ID
+                'duration': '8:20',
+                'thumbnail': '📊',
+                'category': '行业',
+                'publish_date': '2024-03-10',
+                'sentiment': 'neutral',
+                'description': '白酒行业整体发展趋势和竞争格局分析'
+            },
+            {
+                'title': '茅台董事长访谈',
+                'source': 'tencent',
+                'video_id': 'x0q1y2z3a4b',  # 示例腾讯视频 ID
+                'duration': '15:00',
+                'thumbnail': '👔',
+                'category': '高管',
+                'publish_date': '2024-02-28',
+                'sentiment': 'positive',
+                'description': '董事长谈公司战略规划和未来发展'
+            }
+        ],
+        # 宁德时代
+        '300750': [
+            {
+                'title': '宁德时代技术发布会',
+                'source': 'bilibili',
+                'video_id': 'BV1yy411c7mE',
+                'duration': '25:00',
+                'thumbnail': '🔋',
+                'category': '技术',
+                'publish_date': '2024-03-20',
+                'sentiment': 'positive',
+                'description': '发布新一代电池技术，能量密度提升 30%'
+            },
+            {
+                'title': '动力电池行业竞争格局',
+                'source': 'youtube',
+                'video_id': 'aBc123XyZ456',
+                'duration': '10:15',
+                'thumbnail': '🏭',
+                'category': '行业',
+                'publish_date': '2024-03-12',
+                'sentiment': 'neutral',
+                'description': '分析全球动力电池市场竞争态势'
+            }
+        ],
+        # 通用模板（其他股票使用）
+        'default': [
+            {
+                'title': '{stock_name} 财报解读',
+                'source': 'bilibili',
+                'video_id': 'BV1xx411c7mD',
+                'duration': '10:00',
+                'thumbnail': '📈',
+                'category': '财报',
+                'publish_date': '2024-03-01',
+                'sentiment': 'neutral',
+                'description': '深度解析公司最新财报数据'
+            },
+            {
+                'title': '{stock_name} 行业地位分析',
+                'source': 'youtube',
+                'video_id': 'dQw4w9WgXcQ',
+                'duration': '8:00',
+                'thumbnail': '📊',
+                'category': '行业',
+                'publish_date': '2024-02-20',
+                'sentiment': 'positive',
+                'description': '分析公司在行业中的竞争地位'
+            }
+        ]
+    }
+    
+    # 宏观新闻视频库
+    MACRO_VIDEOS = [
+        {
+            'title': '美联储利率决议解读',
+            'source': 'bilibili',
+            'video_id': 'BV1fe4y1c7mF',
+            'duration': '15:30',
+            'thumbnail': '🏦',
+            'category': '宏观',
+            'publish_date': '2024-03-20',
+            'sentiment': 'neutral',
+            'tags': ['美联储', '利率', '货币政策'],
+            'description': '美联储最新利率决议对全球市场的影响分析'
+        },
+        {
+            'title': '地缘政治风险预警',
+            'source': 'youtube',
+            'video_id': 'gHi789JkL012',
+            'duration': '12:00',
+            'thumbnail': '🌍',
+            'category': '宏观',
+            'publish_date': '2024-03-18',
+            'sentiment': 'negative',
+            'tags': ['地缘政治', '国际关系', '风险'],
+            'description': '当前国际局势对A股市场的影响分析'
+        },
+        {
+            'title': '油价波动与能源股',
+            'source': 'tencent',
+            'video_id': 'mNo345PqR678',
+            'duration': '10:45',
+            'thumbnail': '🛢️',
+            'category': '宏观',
+            'publish_date': '2024-03-15',
+            'sentiment': 'neutral',
+            'tags': ['石油', '能源', '通胀'],
+            'description': '国际油价波动对能源板块的影响'
+        },
+        {
+            'title': '中国政策最新解读',
+            'source': 'bilibili',
+            'video_id': 'BV1gh4y1c7mG',
+            'duration': '18:00',
+            'thumbnail': '📋',
+            'category': '政策',
+            'publish_date': '2024-03-22',
+            'sentiment': 'positive',
+            'tags': ['政策', '经济', '刺激'],
+            'description': '最新经济政策对股市的影响分析'
+        }
+    ]
+    
+    def __init__(self, stock_code: str, stock_name: str):
+        self.stock_code = stock_code
+        self.stock_name = stock_name
+        self.video_cache = {}
+    
+    def get_stock_videos(self, category: str = 'all') -> List[Dict]:
+        """获取与股票相关的视频列表"""
+        if self.stock_code in self.VIDEO_TEMPLATES:
+            videos = self.VIDEO_TEMPLATES[self.stock_code]
+        else:
+            videos = [
+                {**template, 'title': template['title'].format(stock_name=self.stock_name)}
+                for template in self.VIDEO_TEMPLATES['default']
+            ]
+        
+        if category != 'all':
+            videos = [v for v in videos if v.get('category') == category]
+        
+        return videos
+    
+    def get_macro_videos(self, tags: List[str] = None) -> List[Dict]:
+        """获取宏观新闻视频"""
+        videos = self.MACRO_VIDEOS.copy()
+        
+        if tags:
+            filtered = []
+            for video in videos:
+                video_tags = video.get('tags', [])
+                if any(tag in video_tags for tag in tags):
+                    filtered.append(video)
+            videos = filtered if filtered else videos
+        
+        return videos
+    
+    def render_video_player(self, video: Dict, key: str = None):
+        """
+        渲染视频播放器（支持多平台嵌入）
+        """
+        if key is None:
+            key = hashlib.md5(f"{video['video_id']}{video['source']}".encode()).hexdigest()[:8]
+        
+        source = video.get('source', 'bilibili')
+        video_id = video.get('video_id', '')
+        
+        # 构建嵌入 URL
+        embed_url = self._build_embed_url(source, video_id)
+        
+        # 视频卡片样式
+        card_html = f"""
+        <div style="
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 15px;
+            padding: 20px;
+            margin: 15px 0;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+        ">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 15px;">
+                <div>
+                    <div style="font-size: 18px; font-weight: bold; color: white; margin-bottom: 5px;">
+                        {video.get('thumbnail', '📺')} {video.get('title', '无标题')}
+                    </div>
+                    <div style="font-size: 12px; color: rgba(255,255,255,0.8);">
+                        📅 {video.get('publish_date', '未知')} | ⏱️ {video.get('duration', '0:00')} | 📁 {video.get('category', '未知')}
+                    </div>
+                </div>
+                <div style="
+                    background: rgba(255,255,255,0.2);
+                    padding: 5px 12px;
+                    border-radius: 20px;
+                    font-size: 12px;
+                    color: white;
+                ">
+                    {source.upper()}
+                </div>
+            </div>
+            
+            <div style="
+                background: rgba(0,0,0,0.3);
+                border-radius: 10px;
+                overflow: hidden;
+                margin-bottom: 15px;
+            ">
+                <iframe
+                    src="{embed_url}"
+                    width="100%"
+                    height="315"
+                    frameborder="0"
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                    allowfullscreen
+                    style="display: block;"
+                ></iframe>
+            </div>
+            
+            <div style="
+                background: rgba(255,255,255,0.1);
+                padding: 12px;
+                border-radius: 8px;
+                font-size: 13px;
+                color: rgba(255,255,255,0.9);
+                margin-bottom: 10px;
+            ">
+                {video.get('description', '暂无描述')}
+            </div>
+            
+            {self._render_tags(video.get('tags', []))}
+        </div>
+        """
+        
+        st.markdown(card_html, unsafe_allow_html=True)
+    
+    def _build_embed_url(self, source: str, video_id: str) -> str:
+        """构建视频嵌入 URL"""
+        if source == 'youtube':
+            return f"https://www.youtube.com/embed/{video_id}"
+        elif source == 'bilibili':
+            return f"https://player.bilibili.com/player.html?bvid={video_id}&page=1&high_quality=1"
+        elif source == 'tencent':
+            return f"https://v.qq.com/txp/iframe/player.html?vid={video_id}&auto=0"
+        elif source == 'youku':
+            return f"https://player.youku.com/embed/{video_id}"
+        else:
+            return f"https://www.youtube.com/embed/{video_id}"
+    
+    def _render_tags(self, tags: List[str]) -> str:
+        """渲染标签"""
+        if not tags:
+            return ''
+        
+        tag_html = '<div style="display: flex; gap: 8px; flex-wrap: wrap;">'
+        for tag in tags:
+            tag_html += f"""
+            <span style="
+                background: rgba(255,255,255,0.15);
+                padding: 4px 10px;
+                border-radius: 12px;
+                font-size: 11px;
+                color: white;
+            ">
+                #{tag}
+            </span>
+            """
+        tag_html += '</div>'
+        return tag_html
+    
+    def create_video_sentiment_chart(self, videos: List[Dict]) -> 'go.Figure':
+        """创建视频情感分布图"""
+        import plotly.graph_objects as go
+        
+        if not videos:
+            return go.Figure()
+        
+        sentiment_counts = {'positive': 0, 'neutral': 0, 'negative': 0}
+        for video in videos:
+            sentiment = video.get('sentiment', 'neutral')
+            sentiment_counts[sentiment] = sentiment_counts.get(sentiment, 0) + 1
+        
+        fig = go.Figure(data=[go.Pie(
+            labels=['正面', '中性', '负面'],
+            values=[sentiment_counts['positive'], sentiment_counts['neutral'], sentiment_counts['negative']],
+            marker_colors=['#66BB6A', '#FFCA28', '#EF5350']
+        )])
+        
+        fig.update_layout(
+            title='视频情感分布',
+            height=300,
+            showlegend=True
+        )
+        
+        return fig
